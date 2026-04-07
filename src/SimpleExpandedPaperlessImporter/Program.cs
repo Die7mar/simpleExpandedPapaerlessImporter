@@ -42,6 +42,8 @@ try
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     builder.Services.AddDbContext<AppDbContext>(opt =>
         opt.UseSqlite($"Data Source={dbPath}"));
+    builder.Services.AddDbContextFactory<AppDbContext>(opt =>
+        opt.UseSqlite($"Data Source={dbPath}"), ServiceLifetime.Scoped);
 
     // ── Authentication (cookie-based, secure) ─────────────────
     builder.Services.AddAuthentication("Cookies")

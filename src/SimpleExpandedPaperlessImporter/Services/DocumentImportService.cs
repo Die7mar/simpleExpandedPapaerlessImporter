@@ -1,6 +1,8 @@
 using System.IO.Compression;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SimpleExpandedPaperlessImporter.Configuration;
+using SimpleExpandedPaperlessImporter.Data;
 using SimpleExpandedPaperlessImporter.Models;
 
 namespace SimpleExpandedPaperlessImporter.Services;
@@ -14,6 +16,7 @@ public class DocumentImportService(
     EmailConverterService emailConverter,
     ImportStatusService statusService,
     IOptionsMonitor<PaperlessSettings> optionsMonitor,
+    IServiceScopeFactory scopeFactory,
     ILogger<DocumentImportService> logger)
 {
     private PaperlessSettings Settings => optionsMonitor.CurrentValue;
@@ -31,7 +34,7 @@ public class DocumentImportService(
         try
         {
             // Convert .eml to PDF first
-            if (Path.GetExtension(filePath).Equals(".eml", StringComparison.OrdinalIgnoreCase) || 
+            if (Path.GetExtension(filePath).Equals(".eml", StringComparison.OrdinalIgnoreCase) ||
                 Path.GetExtension(filePath).Equals(".msg", StringComparison.OrdinalIgnoreCase))
             {
                 workingPath = await emailConverter.ConvertEmailToPdfAsync(filePath, ct);
@@ -42,9 +45,9 @@ public class DocumentImportService(
             _correspondents ??= await paperlessApi.GetAllCorrespondentsAsync(ct);
             var correspondent = ResolveCorrespondent(correspondentFolderName);
 
-            // Resolve default tags
+            // Merge global default tags + per-correspondent tags
             _tags ??= await paperlessApi.GetAllTagsAsync(ct);
-            var tagIds = ResolveTagIds(Settings.DefaultTags);
+            var tagIds = await MergeTagIdsAsync(Settings.DefaultTags, correspondent?.Id, ct);
 
             // Upload
             var taskId = await paperlessApi.UploadDocumentAsync(
@@ -79,6 +82,27 @@ public class DocumentImportService(
     }
 
     /// <summary>
+    /// Merges global default tags (by name) with per-correspondent tags (by ID from DB).
+    /// </summary>
+    private async Task<List<int>> MergeTagIdsAsync(List<string> defaultTagNames, int? correspondentId, CancellationToken ct)
+    {
+        var ids = new HashSet<int>(ResolveTagIds(defaultTagNames));
+
+        if (correspondentId.HasValue)
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var settings = await db.CorrespondentSettings
+                .FirstOrDefaultAsync(cs => cs.CorrespondentId == correspondentId.Value, ct);
+            if (settings is not null)
+                foreach (var id in settings.GetTagIds())
+                    ids.Add(id);
+        }
+
+        return [.. ids];
+    }
+
+    /// <summary>
     /// Finds a Paperless correspondent whose sanitized name matches the folder name.
     /// </summary>
     private PaperlessCorrespondent? ResolveCorrespondent(string? folderName)
@@ -86,19 +110,15 @@ public class DocumentImportService(
         if (string.IsNullOrWhiteSpace(folderName) || _correspondents is null)
             return null;
 
-        // Exact match first
         var match = _correspondents.FirstOrDefault(c =>
             string.Equals(c.Name, folderName, StringComparison.OrdinalIgnoreCase));
 
-        if (match is not null)
-            return match;
+        if (match is not null) return match;
 
-        // Match against sanitized names (invalid path chars replaced)
         match = _correspondents.FirstOrDefault(c =>
             string.Equals(SanitizeFolderName(c.Name), folderName, StringComparison.OrdinalIgnoreCase));
 
-        if (match is not null)
-            return match;
+        if (match is not null) return match;
 
         logger.LogWarning("No Paperless correspondent found for folder '{FolderName}' – document imported without correspondent", folderName);
         return null;
@@ -151,8 +171,7 @@ public class DocumentImportService(
             var logPath = Path.Combine(
                 Path.GetDirectoryName(originalFilePath) ?? Path.GetTempPath(),
                 Path.GetFileNameWithoutExtension(originalFilePath) + "_error.log");
-            var content = $"[{DateTime.Now:O}] Import error for: {originalFilePath}\n\n{ex}";
-            File.WriteAllText(logPath, content);
+            File.WriteAllText(logPath, $"[{DateTime.Now:O}] Import error for: {originalFilePath}\n\n{ex}");
             return logPath;
         }
         catch (Exception logEx)
@@ -169,7 +188,6 @@ public class DocumentImportService(
             .Concat(Path.GetInvalidPathChars())
             .Distinct()
             .ToArray();
-
         return string.Concat(name.Select(c => Array.IndexOf(invalid, c) >= 0 ? '_' : c)).Trim();
     }
 }

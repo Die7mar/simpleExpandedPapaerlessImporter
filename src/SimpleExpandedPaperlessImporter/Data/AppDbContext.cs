@@ -6,6 +6,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<ImportJobEntity> ImportJobs => Set<ImportJobEntity>();
     public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<CorrespondentSettings> CorrespondentSettings => Set<CorrespondentSettings>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -21,6 +22,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.Username).IsUnique();
+        });
+
+        modelBuilder.Entity<CorrespondentSettings>(e =>
+        {
+            e.HasKey(x => x.CorrespondentId);
         });
     }
 }
