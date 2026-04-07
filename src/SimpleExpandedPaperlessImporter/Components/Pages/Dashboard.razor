@@ -1,0 +1,109 @@
+@page "/"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Authorization
+@using SimpleExpandedPaperlessImporter.Models
+@using SimpleExpandedPaperlessImporter.Services
+@inject ImportStatusService StatusService
+@implements IDisposable
+
+<PageTitle>Dashboard – Paperless Importer</PageTitle>
+
+<h1>Dashboard</h1>
+
+<div class="stats-row">
+    <div class="stat-card pending">
+        <div class="stat-value">@_active.Count</div>
+        <div class="stat-label">Aktiv / Ausstehend</div>
+    </div>
+    <div class="stat-card done">
+        <div class="stat-value">@_done.Count</div>
+        <div class="stat-label">Erfolgreich</div>
+    </div>
+    <div class="stat-card error">
+        <div class="stat-value">@_errors.Count</div>
+        <div class="stat-label">Fehler</div>
+    </div>
+</div>
+
+@if (_active.Count > 0)
+{
+    <h2>Aktive Importe</h2>
+    <table class="job-table">
+        <thead>
+            <tr><th>Datei</th><th>Korrespondent</th><th>Status</th><th>Gestartet</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var job in _active)
+            {
+                <tr>
+                    <td>@job.FileName</td>
+                    <td>@(job.CorrespondentName ?? "–")</td>
+                    <td><span class="badge @BadgeClass(job.State)">@job.State</span></td>
+                    <td>@job.StartedAt.ToLocalTime().ToString("HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h2>Zuletzt importiert</h2>
+@if (_done.Count == 0)
+{
+    <p class="muted">Noch keine Dokumente importiert.</p>
+}
+else
+{
+    <table class="job-table">
+        <thead>
+            <tr><th>Datei</th><th>Korrespondent</th><th>Task-ID</th><th>Abgeschlossen</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var job in _done.OrderByDescending(j => j.FinishedAt).Take(50))
+            {
+                <tr>
+                    <td>@job.FileName</td>
+                    <td>@(job.CorrespondentName ?? "–")</td>
+                    <td class="mono">@(job.PaperlessDocumentId ?? "–")</td>
+                    <td>@job.FinishedAt?.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<ImportJob> _active = [];
+    private IReadOnlyList<ImportJob> _done = [];
+    private IReadOnlyList<ImportJob> _errors = [];
+
+    protected override void OnInitialized()
+    {
+        StatusService.OnChange += OnStatusChanged;
+        Refresh();
+    }
+
+    private void OnStatusChanged()
+    {
+        Refresh();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void Refresh()
+    {
+        _active = StatusService.ActiveJobs;
+        _done = StatusService.DoneJobs;
+        _errors = StatusService.ErrorJobs;
+    }
+
+    private static string BadgeClass(ImportState state) => state switch
+    {
+        ImportState.Importing => "badge-importing",
+        ImportState.Pending => "badge-pending",
+        ImportState.Done => "badge-done",
+        ImportState.Error => "badge-error",
+        _ => ""
+    };
+
+    public void Dispose() => StatusService.OnChange -= OnStatusChanged;
+}

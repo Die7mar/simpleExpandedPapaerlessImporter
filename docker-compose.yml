@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  paperless-importer:
+    build:
+      context: ./src/SimpleExpandedPaperlessImporter
+      dockerfile: Dockerfile
+    container_name: paperless-importer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/inbox:/data/inbox
+      - ./data/done:/data/done
+      - ./data/error:/data/error
+      - ./data/db:/app/data
+      - ./logs:/app/logs
+    environment:
+      - Paperless__BaseUrl=http://paperless-ngx:8000
+      - Paperless__ApiToken=YOUR_API_TOKEN_HERE
+      - Paperless__DefaultTags__0=importiert
+      - Paperless__InboxFolder=/data/inbox
+      - Paperless__DoneFolder=/data/done
+      - Paperless__ErrorFolder=/data/error
+      - Paperless__RetentionDays=7
+      - Paperless__PollingIntervalSeconds=30
+      - SettingsFilePath=/app/data/settings.json
+      - DatabasePath=/app/data/paperless-importer.db
+    # Uncomment to connect to an existing paperless-ngx network:
+    # networks:
+    #   - paperless_default
+
+# networks:
+#   paperless_default:
+#     external: true

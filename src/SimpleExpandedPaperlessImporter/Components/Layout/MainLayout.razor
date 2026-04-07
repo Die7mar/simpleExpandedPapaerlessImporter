@@ -1,0 +1,26 @@
+@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Nav
+
+<div class="layout">
+    <nav class="sidebar">
+        <div class="logo">📄 Paperless Importer</div>
+        <NavLink href="/" Match="NavLinkMatch.All">🏠 Dashboard</NavLink>
+        <NavLink href="/errors">⚠️ Fehler</NavLink>
+        <NavLink href="/settings">⚙️ Einstellungen</NavLink>
+        <div class="sidebar-spacer"></div>
+        <AuthorizeView>
+            <Authorized>
+                <div class="sidebar-user">👤 @context.User.Identity?.Name</div>
+                <form method="post" action="/logout">
+                    <AntiforgeryToken />
+                    <button type="submit" class="logout-btn">🚪 Abmelden</button>
+                </form>
+            </Authorized>
+        </AuthorizeView>
+    </nav>
+    <main class="content">
+        @Body
+    </main>
+</div>

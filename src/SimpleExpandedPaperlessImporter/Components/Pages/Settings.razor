@@ -1,0 +1,145 @@
+@page "/settings"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Authorization
+@using SimpleExpandedPaperlessImporter.Configuration
+@using SimpleExpandedPaperlessImporter.Services
+@inject SettingsService SettingsService
+@inject CorrespondentSyncService SyncService
+
+<PageTitle>Einstellungen – Paperless Importer</PageTitle>
+
+<h1>Einstellungen</h1>
+
+@if (_saved)
+{
+    <div class="alert-success">✅ Einstellungen gespeichert und live übernommen.</div>
+}
+@if (!string.IsNullOrEmpty(_saveError))
+{
+    <div class="alert-error">❌ @_saveError</div>
+}
+
+<EditForm Model="_model" OnValidSubmit="SaveSettings">
+    <DataAnnotationsValidator />
+
+    <h2>Paperless-NGX Verbindung</h2>
+    <div class="form-grid">
+        <label>Basis-URL</label>
+        <input @bind="_model.BaseUrl" class="form-input" placeholder="http://paperless-ngx:8000" />
+
+        <label>API Token</label>
+        <input @bind="_model.ApiToken" class="form-input" type="password" placeholder="Token hier eingeben" />
+    </div>
+
+    <h2>Ordner</h2>
+    <div class="form-grid">
+        <label>Inbox-Ordner</label>
+        <input @bind="_model.InboxFolder" class="form-input" placeholder="/data/inbox" />
+
+        <label>Done-Ordner</label>
+        <input @bind="_model.DoneFolder" class="form-input" placeholder="/data/done" />
+
+        <label>Error-Ordner</label>
+        <input @bind="_model.ErrorFolder" class="form-input" placeholder="/data/error" />
+    </div>
+
+    <h2>Verhalten</h2>
+    <div class="form-grid">
+        <label>Aufbewahrung (Tage)</label>
+        <input @bind="_model.RetentionDays" class="form-input" type="number" min="1" max="365" />
+
+        <label>Polling-Intervall (Sekunden)</label>
+        <input @bind="_model.PollingIntervalSeconds" class="form-input" type="number" min="5" max="3600" />
+
+        <label>Standard-Tags <span class="hint">(kommagetrennt)</span></label>
+        <input @bind="_tagsRaw" class="form-input" placeholder="importiert, auto" />
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn-save" disabled="@_saving">
+            @(_saving ? "Speichert …" : "💾 Speichern & Übernehmen")
+        </button>
+    </div>
+</EditForm>
+
+<h2>Korrespondenten-Ordner</h2>
+<div class="sync-box">
+    @if (SyncService.LastSyncUtc.HasValue)
+    {
+        <p>✅ Letzter Sync: <strong>@SyncService.LastSyncUtc.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</strong>
+           &nbsp;·&nbsp; @SyncService.LastSyncCount Korrespondenten</p>
+    }
+    else
+    {
+        <p class="muted">Noch kein Sync durchgeführt.</p>
+    }
+    @if (!string.IsNullOrEmpty(SyncService.LastError))
+    {
+        <p class="error-msg">⚠️ @SyncService.LastError</p>
+    }
+    <button class="btn-sync" @onclick="SyncNow" disabled="@_syncing">
+        @(_syncing ? "Synchronisiert …" : "🔄 Jetzt synchronisieren")
+    </button>
+    @if (!string.IsNullOrEmpty(_syncResultMessage))
+    {
+        <p class="@(_syncSuccess ? "sync-ok" : "error-msg")">@_syncResultMessage</p>
+    }
+</div>
+
+@code {
+    private PaperlessSettings _model = new();
+    private string _tagsRaw = "";
+    private bool _saving;
+    private bool _saved;
+    private string? _saveError;
+    private bool _syncing;
+    private bool _syncSuccess;
+    private string? _syncResultMessage;
+
+    protected override void OnInitialized()
+    {
+        _model = SettingsService.GetCurrent();
+        _tagsRaw = string.Join(", ", _model.DefaultTags);
+    }
+
+    private async Task SaveSettings()
+    {
+        _saving = true;
+        _saved = false;
+        _saveError = null;
+        StateHasChanged();
+
+        try
+        {
+            _model.DefaultTags = _tagsRaw
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+
+            await SettingsService.SaveAsync(_model);
+            _saved = true;
+        }
+        catch (Exception ex)
+        {
+            _saveError = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task SyncNow()
+    {
+        _syncing = true;
+        _syncResultMessage = null;
+        StateHasChanged();
+
+        var ok = await SyncService.TrySyncAsync();
+        _syncSuccess = ok;
+        _syncResultMessage = ok
+            ? $"✅ Sync erfolgreich – {SyncService.LastSyncCount} Korrespondenten."
+            : $"❌ {SyncService.LastError}";
+        _syncing = false;
+    }
+}

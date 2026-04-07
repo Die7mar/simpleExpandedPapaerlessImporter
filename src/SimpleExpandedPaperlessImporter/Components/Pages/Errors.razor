@@ -1,0 +1,54 @@
+@page "/errors"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Authorization
+@using SimpleExpandedPaperlessImporter.Models
+@using SimpleExpandedPaperlessImporter.Services
+@inject ImportStatusService StatusService
+@implements IDisposable
+
+<PageTitle>Fehler – Paperless Importer</PageTitle>
+
+<h1>Fehler</h1>
+
+@if (_errors.Count == 0)
+{
+    <p class="muted">✅ Keine Fehler vorhanden.</p>
+}
+else
+{
+    <table class="job-table">
+        <thead>
+            <tr><th>Datei</th><th>Korrespondent</th><th>Fehlermeldung</th><th>Zeit</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var job in _errors.OrderByDescending(j => j.FinishedAt))
+            {
+                <tr>
+                    <td>@job.FileName</td>
+                    <td>@(job.CorrespondentName ?? "–")</td>
+                    <td class="error-msg">@job.ErrorMessage</td>
+                    <td>@job.FinishedAt?.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<ImportJob> _errors = [];
+
+    protected override void OnInitialized()
+    {
+        StatusService.OnChange += OnStatusChanged;
+        _errors = StatusService.ErrorJobs;
+    }
+
+    private void OnStatusChanged()
+    {
+        _errors = StatusService.ErrorJobs;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose() => StatusService.OnChange -= OnStatusChanged;
+}

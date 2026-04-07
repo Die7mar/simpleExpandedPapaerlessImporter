@@ -1,0 +1,43 @@
+@page "/login"
+@layout SimpleExpandedPaperlessImporter.Components.Layout.EmptyLayout
+@* Static render – no WebSocket needed; auth is handled by the POST endpoint /do-login *@
+@using Microsoft.AspNetCore.WebUtilities
+
+@{
+    var error = HttpContext?.Request.Query["error"].FirstOrDefault();
+}
+
+<PageTitle>Login – Simple Expanded Paperless Importer</PageTitle>
+
+<div class="login-wrapper">
+    <div class="login-card">
+        <div class="login-logo">📄</div>
+        <h1 class="login-title">Paperless Importer</h1>
+        <p class="login-subtitle">Bitte melde dich an</p>
+
+        @if (error == "1")
+        {
+            <div class="login-error">Ungültiger Benutzername oder Passwort.</div>
+        }
+
+        <form method="post" action="/do-login">
+            <AntiforgeryToken />
+            <div class="login-field">
+                <label for="username">Benutzername</label>
+                <input id="username" name="username" class="login-input"
+                       autocomplete="username" placeholder="admin" />
+            </div>
+            <div class="login-field">
+                <label for="password">Passwort</label>
+                <input id="password" name="password" type="password"
+                       class="login-input" autocomplete="current-password"
+                       placeholder="••••••••" />
+            </div>
+            <button type="submit" class="login-btn">🔐 Anmelden</button>
+        </form>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] private HttpContext? HttpContext { get; set; }
+}

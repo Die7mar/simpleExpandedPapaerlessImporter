@@ -1,0 +1,25 @@
+<Router AppAssembly="typeof(App).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="@routeData" DefaultLayout="typeof(Layout.MainLayout)">
+            <NotAuthorized>
+                @{
+                    if (context.User.Identity?.IsAuthenticated != true)
+                    {
+                        Nav.NavigateTo("/login", forceLoad: true);
+                    }
+                }
+            </NotAuthorized>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <PageTitle>Nicht gefunden</PageTitle>
+        <LayoutView Layout="typeof(Layout.MainLayout)">
+            <p>Seite nicht gefunden.</p>
+        </LayoutView>
+    </NotFound>
+</Router>
+
+@code {
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+}
