@@ -149,6 +149,13 @@ try
         return Results.Redirect("/login");
     }).RequireAuthorization();
 
+    // GET logout (redirect after password change)
+    app.MapGet("/logout-redirect", async (HttpContext ctx) =>
+    {
+        await ctx.SignOutAsync("Cookies");
+        return Results.Redirect("/login");
+    });
+
     app.Run();
 }
 catch (Exception ex)
