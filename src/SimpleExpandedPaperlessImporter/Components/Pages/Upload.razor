@@ -4,8 +4,11 @@
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Forms
 @using Microsoft.Extensions.Options
+@using Microsoft.EntityFrameworkCore
+@using SimpleExpandedPaperlessImporter.Data
 @inject PaperlessApiService PaperlessApi
 @inject IOptionsMonitor<PaperlessSettings> Options
+@inject IDbContextFactory<AppDbContext> DbFactory
 @inject ILogger<Upload> Logger
 
 <PageTitle>Upload – Simple Expanded Paperless Importer</PageTitle>
@@ -26,7 +29,8 @@
 <div class="card" style="max-width:600px; padding:1.5rem; background:#fff; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08)">
     <div class="login-field" style="margin-bottom:1rem">
         <label>Korrespondent (optional)</label>
-        <select class="form-input" @bind="_selectedCorrespondentId">
+        <select class="form-input" value="@_selectedCorrespondentId"
+                @onchange="OnCorrespondentChanged">
             <option value="0">– Kein Korrespondent –</option>
             @foreach (var c in _correspondents)
             {
@@ -36,18 +40,32 @@
     </div>
 
     <div class="login-field" style="margin-bottom:1rem">
-        <label>Tags (optional, zusätzlich zu Korrespondenten-Tags)</label>
+        <label>Tags</label>
+        <p class="hint" style="margin-bottom:0.4rem">
+            Automatisch gesetzt durch Korrespondent &amp; globale Standard-Tags. Manuell anpassbar.
+        </p>
         <div style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.3rem">
             @foreach (var tag in _allTags)
             {
-                <label style="display:flex; align-items:center; gap:0.25rem; font-size:0.85rem; cursor:pointer">
+                var tagId = tag.Id;
+                var isAuto = _autoTagIds.Contains(tagId);
+                <label style="display:flex; align-items:center; gap:0.25rem; font-size:0.85rem; cursor:pointer;
+                              background:@(_selectedTagIds.Contains(tagId) ? "#ebf8ff" : "#f7fafc");
+                              border:1px solid @(_selectedTagIds.Contains(tagId) ? "#63b3ed" : "#e2e8f0");
+                              border-radius:20px; padding:0.2rem 0.65rem; transition:all 0.1s"
+                      title="@(isAuto ? "Automatisch durch Korrespondent/Standard-Tags" : "")">
                     <input type="checkbox"
-                           checked="@_selectedTagIds.Contains(tag.Id)"
-                           @onchange="e => ToggleTag(tag.Id, (bool)e.Value!)" />
-                    @tag.Name
+                           style="display:none"
+                           checked="@_selectedTagIds.Contains(tagId)"
+                           @onchange="e => ToggleTag(tagId, (bool)e.Value!)" />
+                    @tag.Name@(isAuto ? " ✦" : "")
                 </label>
             }
         </div>
+        @if (_allTags.Count == 0)
+        {
+            <p class="hint">Keine Tags in Paperless gefunden.</p>
+        }
     </div>
 
     <div class="login-field" style="margin-bottom:1.25rem">
@@ -65,7 +83,12 @@
     private List<IBrowserFile> _files = [];
     private List<PaperlessCorrespondent> _correspondents = [];
     private List<PaperlessTag> _allTags = [];
+    // Tags currently checked (user may override)
     private HashSet<int> _selectedTagIds = [];
+    // Tags that were auto-applied (shown with ✦)
+    private HashSet<int> _autoTagIds = [];
+    // Stored per-correspondent tags from DB
+    private Dictionary<int, List<int>> _correspondentTagMap = [];
     private int _selectedCorrespondentId;
     private bool _loading;
     private List<(string Msg, bool Ok)> _messages = [];
@@ -76,11 +99,59 @@
         {
             _correspondents = await PaperlessApi.GetAllCorrespondentsAsync();
             _allTags        = await PaperlessApi.GetAllTagsAsync();
+
+            // Load all CorrespondentSettings from DB
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var settings = await db.CorrespondentSettings.ToListAsync();
+            _correspondentTagMap = settings.ToDictionary(
+                s => s.CorrespondentId,
+                s => s.GetTagIds());
         }
         catch (Exception ex)
         {
-            _messages.Add(($"⚠️ Paperless-Verbindung fehlgeschlagen: {ex.Message}", false));
+            _messages.Add(($"⚠️ Verbindung fehlgeschlagen: {ex.Message}", false));
         }
+
+        // Pre-select global default tags
+        ApplyAutoTags(null);
+    }
+
+    private void OnCorrespondentChanged(ChangeEventArgs e)
+    {
+        _selectedCorrespondentId = int.TryParse(e.Value?.ToString(), out var id) ? id : 0;
+        ApplyAutoTags(_selectedCorrespondentId == 0 ? null : _selectedCorrespondentId);
+    }
+
+    /// <summary>
+    /// Recalculates auto-tags (global defaults + correspondent-specific) and
+    /// merges them into _selectedTagIds, removing only previously auto-applied tags
+    /// that were not manually added.
+    /// </summary>
+    private void ApplyAutoTags(int? correspondentId)
+    {
+        // Remove previously auto-applied tags (unless user explicitly kept them via toggle)
+        _selectedTagIds.ExceptWith(_autoTagIds);
+        _autoTagIds.Clear();
+
+        // Global default tags by name
+        var defaultNames = Options.CurrentValue.DefaultTags;
+        foreach (var name in defaultNames)
+        {
+            var tag = _allTags.FirstOrDefault(t =>
+                string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(t.Slug, name, StringComparison.OrdinalIgnoreCase));
+            if (tag is not null) _autoTagIds.Add(tag.Id);
+        }
+
+        // Per-correspondent tags from DB
+        if (correspondentId.HasValue &&
+            _correspondentTagMap.TryGetValue(correspondentId.Value, out var cTags))
+        {
+            foreach (var id in cTags) _autoTagIds.Add(id);
+        }
+
+        // Apply auto-tags
+        _selectedTagIds.UnionWith(_autoTagIds);
     }
 
     private void OnFilesSelected(InputFileChangeEventArgs e) =>
@@ -88,8 +159,17 @@
 
     private void ToggleTag(int id, bool on)
     {
-        if (on) _selectedTagIds.Add(id);
-        else    _selectedTagIds.Remove(id);
+        if (on)
+        {
+            _selectedTagIds.Add(id);
+            // If user manually re-checks an auto-tag, keep it as auto
+        }
+        else
+        {
+            _selectedTagIds.Remove(id);
+            // Remove from auto set so ApplyAutoTags won't re-add it next time
+            _autoTagIds.Remove(id);
+        }
     }
 
     private async Task DoUpload()
@@ -106,21 +186,6 @@
         var correspondentId = _selectedCorrespondentId == 0 ? (int?)null : _selectedCorrespondentId;
         var tagIds = _selectedTagIds.ToList();
 
-        // Add global default tags by name resolution
-        try
-        {
-            var defaultTagNames = Options.CurrentValue.DefaultTags;
-            foreach (var name in defaultTagNames)
-            {
-                var tag = _allTags.FirstOrDefault(t =>
-                    string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(t.Slug, name, StringComparison.OrdinalIgnoreCase));
-                if (tag is not null) tagIds.Add(tag.Id);
-            }
-            tagIds = tagIds.Distinct().ToList();
-        }
-        catch { /* non-fatal */ }
-
         foreach (var file in _files)
         {
             var safeName = Path.GetFileName(file.Name);
@@ -128,7 +193,6 @@
 
             try
             {
-                // Save to temp (max 200 MB)
                 await using (var fs = File.Create(tempPath))
                 await using (var stream = file.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024))
                     await stream.CopyToAsync(fs);
