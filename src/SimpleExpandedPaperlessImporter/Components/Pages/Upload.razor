@@ -1,0 +1,155 @@
+@page "/upload"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.Extensions.Options
+@inject PaperlessApiService PaperlessApi
+@inject IOptionsMonitor<PaperlessSettings> Options
+@inject ILogger<Upload> Logger
+
+<PageTitle>Upload – Simple Expanded Paperless Importer</PageTitle>
+
+<h1>📤 Dokument hochladen</h1>
+<p class="hint" style="margin-bottom:1.5rem">Dokumente direkt über das Webinterface in Paperless hochladen.</p>
+
+@if (_messages.Count > 0)
+{
+    <div style="margin-bottom:1rem">
+        @foreach (var (msg, ok) in _messages)
+        {
+            <div class="@(ok ? "alert-success" : "alert-error")">@msg</div>
+        }
+    </div>
+}
+
+<div class="card" style="max-width:600px; padding:1.5rem; background:#fff; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08)">
+    <div class="login-field" style="margin-bottom:1rem">
+        <label>Korrespondent (optional)</label>
+        <select class="form-input" @bind="_selectedCorrespondentId">
+            <option value="0">– Kein Korrespondent –</option>
+            @foreach (var c in _correspondents)
+            {
+                <option value="@c.Id">@c.Name</option>
+            }
+        </select>
+    </div>
+
+    <div class="login-field" style="margin-bottom:1rem">
+        <label>Tags (optional, zusätzlich zu Korrespondenten-Tags)</label>
+        <div style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.3rem">
+            @foreach (var tag in _allTags)
+            {
+                <label style="display:flex; align-items:center; gap:0.25rem; font-size:0.85rem; cursor:pointer">
+                    <input type="checkbox"
+                           checked="@_selectedTagIds.Contains(tag.Id)"
+                           @onchange="e => ToggleTag(tag.Id, (bool)e.Value!)" />
+                    @tag.Name
+                </label>
+            }
+        </div>
+    </div>
+
+    <div class="login-field" style="margin-bottom:1.25rem">
+        <label>Dateien auswählen (PDF, JPG, PNG, TIF, EML, TXT)</label>
+        <InputFile OnChange="OnFilesSelected" multiple accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.eml,.txt"
+                   class="form-input" style="padding:0.3rem" />
+    </div>
+
+    <button class="btn-save" @onclick="DoUpload" disabled="@(_loading || _files.Count == 0)">
+        @(_loading ? "Hochladen …" : $"📤 {_files.Count} Datei(en) hochladen")
+    </button>
+</div>
+
+@code {
+    private List<IBrowserFile> _files = [];
+    private List<PaperlessCorrespondent> _correspondents = [];
+    private List<PaperlessTag> _allTags = [];
+    private HashSet<int> _selectedTagIds = [];
+    private int _selectedCorrespondentId;
+    private bool _loading;
+    private List<(string Msg, bool Ok)> _messages = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _correspondents = await PaperlessApi.GetAllCorrespondentsAsync();
+            _allTags        = await PaperlessApi.GetAllTagsAsync();
+        }
+        catch (Exception ex)
+        {
+            _messages.Add(($"⚠️ Paperless-Verbindung fehlgeschlagen: {ex.Message}", false));
+        }
+    }
+
+    private void OnFilesSelected(InputFileChangeEventArgs e) =>
+        _files = [.. e.GetMultipleFiles(20)];
+
+    private void ToggleTag(int id, bool on)
+    {
+        if (on) _selectedTagIds.Add(id);
+        else    _selectedTagIds.Remove(id);
+    }
+
+    private async Task DoUpload()
+    {
+        if (_files.Count == 0) return;
+
+        _loading  = true;
+        _messages = [];
+        StateHasChanged();
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "sepi-upload");
+        Directory.CreateDirectory(tempDir);
+
+        var correspondentId = _selectedCorrespondentId == 0 ? (int?)null : _selectedCorrespondentId;
+        var tagIds = _selectedTagIds.ToList();
+
+        // Add global default tags by name resolution
+        try
+        {
+            var defaultTagNames = Options.CurrentValue.DefaultTags;
+            foreach (var name in defaultTagNames)
+            {
+                var tag = _allTags.FirstOrDefault(t =>
+                    string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(t.Slug, name, StringComparison.OrdinalIgnoreCase));
+                if (tag is not null) tagIds.Add(tag.Id);
+            }
+            tagIds = tagIds.Distinct().ToList();
+        }
+        catch { /* non-fatal */ }
+
+        foreach (var file in _files)
+        {
+            var safeName = Path.GetFileName(file.Name);
+            var tempPath = Path.Combine(tempDir, $"{Guid.NewGuid():N}_{safeName}");
+
+            try
+            {
+                // Save to temp (max 200 MB)
+                await using (var fs = File.Create(tempPath))
+                await using (var stream = file.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024))
+                    await stream.CopyToAsync(fs);
+
+                var taskId = await PaperlessApi.UploadDocumentAsync(
+                    tempPath, safeName, correspondentId, tagIds);
+
+                _messages.Add(($"✅ {safeName} → Paperless Task: {taskId}", true));
+            }
+            catch (Exception ex)
+            {
+                _messages.Add(($"❌ {safeName}: {ex.Message}", false));
+                Logger.LogError(ex, "Web upload failed for '{File}'", safeName);
+            }
+            finally
+            {
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+            }
+        }
+
+        _files   = [];
+        _loading = false;
+    }
+}
