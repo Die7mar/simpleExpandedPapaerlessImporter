@@ -3,7 +3,7 @@
 **[Deutsch](#deutsch) | [English](#english)**
 
 ---
-# Testprojkt für umgang mit Githup Copilot
+# Testprojkt für umgang mit Github Copilot
 <a name="deutsch"></a>
 # 🇩🇪 Deutsch
 
