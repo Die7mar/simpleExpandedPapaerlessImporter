@@ -7,6 +7,7 @@
 @using Microsoft.EntityFrameworkCore
 @using SimpleExpandedPaperlessImporter.Data
 @inject PaperlessApiService PaperlessApi
+@inject DocumentImportService ImportService
 @inject IOptionsMonitor<PaperlessSettings> Options
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject ILogger<Upload> Logger
@@ -197,10 +198,10 @@
                 await using (var stream = file.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024))
                     await stream.CopyToAsync(fs);
 
-                var taskId = await PaperlessApi.UploadDocumentAsync(
+                await ImportService.ImportFromWebAsync(
                     tempPath, safeName, correspondentId, tagIds);
 
-                _messages.Add(($"✅ {safeName} → Paperless Task: {taskId}", true));
+                _messages.Add(($"✅ {safeName} erfolgreich hochgeladen.", true));
             }
             catch (Exception ex)
             {

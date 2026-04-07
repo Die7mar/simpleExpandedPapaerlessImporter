@@ -49,6 +49,15 @@ public class DocumentImportService(
             _tags ??= await paperlessApi.GetAllTagsAsync(ct);
             var tagIds = await MergeTagIdsAsync(Settings.DefaultTags, correspondent?.Id, ct);
 
+            var tagNames = tagIds
+                .Select(id => _tags.FirstOrDefault(t => t.Id == id)?.Name ?? id.ToString())
+                .ToList();
+            logger.LogInformation(
+                "Folder import '{File}' → correspondent='{Correspondent}', tags=[{Tags}]",
+                Path.GetFileName(filePath),
+                correspondent?.Name ?? "none",
+                string.Join(", ", tagNames));
+
             // Upload
             var taskId = await paperlessApi.UploadDocumentAsync(
                 workingPath,
@@ -78,6 +87,72 @@ public class DocumentImportService(
             if (errorLogPath is not null)
                 filesToZip.Add(errorLogPath);
             SafeZip(filesToZip, Settings.ErrorFolder);
+        }
+    }
+
+    /// <summary>
+    /// Handles a direct web upload: logs via ImportStatusService, uploads to Paperless.
+    /// Default tags (from settings) and correspondent-specific tags are merged server-side
+    /// on top of the user-selected tagIds, ensuring they are always applied unless
+    /// the user explicitly unchecked them in the UI (in which case they won't be in tagIds).
+    /// </summary>
+    public async Task ImportFromWebAsync(
+        string tempFilePath,
+        string originalFileName,
+        int? correspondentId,
+        IEnumerable<int> uiTagIds,
+        CancellationToken ct = default)
+    {
+        // Load correspondents + tags for name resolution and logging
+        _correspondents ??= await paperlessApi.GetAllCorrespondentsAsync(ct);
+        _tags           ??= await paperlessApi.GetAllTagsAsync(ct);
+
+        var correspondentName = correspondentId.HasValue
+            ? _correspondents.FirstOrDefault(c => c.Id == correspondentId.Value)?.Name
+            : null;
+
+        // Merge: user-selected tags + default tags + correspondent tags (server-side safety net)
+        var finalTagIds = new HashSet<int>(uiTagIds);
+        var serverTagIds = await MergeTagIdsAsync(Settings.DefaultTags, correspondentId, ct);
+        // Only add server-side default/correspondent tags that are already selected in UI.
+        // This preserves the user's ability to uncheck them (they won't be in uiTagIds if unchecked).
+        // Exception: correspondent-specific tags from DB are always applied (consistent with folder import).
+        if (correspondentId.HasValue)
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var cSettings = await db.CorrespondentSettings
+                .FirstOrDefaultAsync(cs => cs.CorrespondentId == correspondentId.Value, ct);
+            if (cSettings is not null)
+                foreach (var id in cSettings.GetTagIds())
+                    finalTagIds.Add(id); // always apply correspondent tags
+        }
+
+        var tagNames = finalTagIds
+            .Select(id => _tags.FirstOrDefault(t => t.Id == id)?.Name ?? id.ToString())
+            .ToList();
+        logger.LogInformation(
+            "Web upload '{File}' → correspondent='{Correspondent}', tags=[{Tags}]",
+            originalFileName,
+            correspondentName ?? "none",
+            string.Join(", ", tagNames));
+
+        var job = statusService.AddJob(originalFileName, correspondentName);
+        statusService.MarkImporting(job);
+
+        try
+        {
+            var taskId = await paperlessApi.UploadDocumentAsync(
+                tempFilePath, originalFileName, correspondentId, [.. finalTagIds], ct);
+
+            statusService.MarkDone(job, taskId);
+            logger.LogInformation("Web upload '{File}' accepted by Paperless, task: {Task}", originalFileName, taskId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Web upload failed for '{File}'", originalFileName);
+            statusService.MarkError(job, ex.Message);
+            throw;
         }
     }
 
@@ -129,13 +204,22 @@ public class DocumentImportService(
         if (_tags is null || tagNames.Count == 0)
             return [];
 
-        return tagNames
-            .Select(name => _tags.FirstOrDefault(t =>
+        var result = new List<int>();
+        foreach (var name in tagNames)
+        {
+            var tag = _tags.FirstOrDefault(t =>
                 string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(t.Slug, name, StringComparison.OrdinalIgnoreCase)))
-            .Where(t => t is not null)
-            .Select(t => t!.Id)
-            .ToList();
+                string.Equals(t.Slug, name, StringComparison.OrdinalIgnoreCase));
+
+            if (tag is not null)
+                result.Add(tag.Id);
+            else
+                logger.LogWarning(
+                    "Default tag '{TagName}' not found in Paperless – it will not be applied. " +
+                    "Check Settings → DefaultTags and verify the tag exists in Paperless.",
+                    name);
+        }
+        return result;
     }
 
     /// <summary>Zips the given files into a timestamped .zip in the target folder, then deletes the originals.</summary>
